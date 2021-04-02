@@ -16,9 +16,14 @@
 
 package com.alibaba.nacos.config.server.controller;
 
+import com.alibaba.nacos.api.config.ConfigType;
 import com.alibaba.nacos.api.exception.NacosException;
+import com.alibaba.nacos.auth.annotation.Secured;
+import com.alibaba.nacos.auth.common.ActionTypes;
 import com.alibaba.nacos.common.model.RestResult;
+import com.alibaba.nacos.common.model.RestResultUtils;
 import com.alibaba.nacos.common.utils.MapUtils;
+import com.alibaba.nacos.common.utils.NamespaceUtil;
 import com.alibaba.nacos.config.server.auth.ConfigResourceParser;
 import com.alibaba.nacos.config.server.constant.Constants;
 import com.alibaba.nacos.config.server.controller.parameters.SameNamespaceCloneConfigBean;
@@ -30,10 +35,9 @@ import com.alibaba.nacos.config.server.model.GroupkeyListenserStatus;
 import com.alibaba.nacos.config.server.model.Page;
 import com.alibaba.nacos.config.server.model.SameConfigPolicy;
 import com.alibaba.nacos.config.server.model.SampleResult;
-import com.alibaba.nacos.config.server.result.ResultBuilder;
+import com.alibaba.nacos.config.server.model.event.ConfigDataChangeEvent;
 import com.alibaba.nacos.config.server.result.code.ResultCodeEnum;
 import com.alibaba.nacos.config.server.service.AggrWhitelist;
-import com.alibaba.nacos.config.server.model.event.ConfigDataChangeEvent;
 import com.alibaba.nacos.config.server.service.ConfigChangePublisher;
 import com.alibaba.nacos.config.server.service.ConfigSubService;
 import com.alibaba.nacos.config.server.service.repository.PersistService;
@@ -43,9 +47,7 @@ import com.alibaba.nacos.config.server.utils.ParamUtils;
 import com.alibaba.nacos.config.server.utils.RequestUtil;
 import com.alibaba.nacos.config.server.utils.TimeUtils;
 import com.alibaba.nacos.config.server.utils.ZipUtils;
-import com.alibaba.nacos.core.auth.ActionTypes;
-import com.alibaba.nacos.core.auth.Secured;
-import com.alibaba.nacos.core.utils.InetUtils;
+import com.alibaba.nacos.sys.utils.InetUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.time.DateFormatUtils;
 import org.slf4j.Logger;
@@ -90,8 +92,6 @@ public class ConfigController {
     
     private static final Logger LOGGER = LoggerFactory.getLogger(ConfigController.class);
     
-    private static final String NAMESPACE_PUBLIC_KEY = "public";
-    
     private static final String EXPORT_CONFIG_FILE_NAME = "nacos_config_export_";
     
     private static final String EXPORT_CONFIG_FILE_NAME_EXT = ".zip";
@@ -134,6 +134,11 @@ public class ConfigController {
         
         final String srcIp = RequestUtil.getRemoteIp(request);
         final String requestIpApp = RequestUtil.getAppName(request);
+        srcUser = RequestUtil.getSrcUserName(request);
+        //check type
+        if (!ConfigType.isValidType(type)) {
+            type = ConfigType.getDefaultType().getType();
+        }
         // check tenant
         ParamUtils.checkTenant(tenant);
         ParamUtils.checkParam(dataId, group, "datumId", content);
@@ -174,7 +179,7 @@ public class ConfigController {
                     .notifyConfigChange(new ConfigDataChangeEvent(true, dataId, group, tenant, time.getTime()));
         }
         ConfigTraceService
-                .logPersistenceEvent(dataId, group, tenant, requestIpApp, time.getTime(), InetUtils.getSelfIp(),
+                .logPersistenceEvent(dataId, group, tenant, requestIpApp, time.getTime(), InetUtils.getSelfIP(),
                         ConfigTraceService.PERSISTENCE_EVENT_PUB, content);
         return true;
     }
@@ -183,8 +188,8 @@ public class ConfigController {
      * Get configure board infomation fail.
      *
      * @throws ServletException ServletException.
-     * @throws IOException IOException.
-     * @throws NacosException NacosException.
+     * @throws IOException      IOException.
+     * @throws NacosException   NacosException.
      */
     @GetMapping
     @Secured(action = ActionTypes.READ, parser = ConfigResourceParser.class)
@@ -195,7 +200,7 @@ public class ConfigController {
             throws IOException, ServletException, NacosException {
         // check tenant
         ParamUtils.checkTenant(tenant);
-        tenant = processTenant(tenant);
+        tenant = NamespaceUtil.processNamespaceParameter(tenant);
         // check params
         ParamUtils.checkParam(dataId, group, "datumId", "content");
         ParamUtils.checkParam(tag);
@@ -239,10 +244,11 @@ public class ConfigController {
         ParamUtils.checkParam(dataId, group, "datumId", "rm");
         ParamUtils.checkParam(tag);
         String clientIp = RequestUtil.getRemoteIp(request);
+        String srcUser = RequestUtil.getSrcUserName(request);
         if (StringUtils.isBlank(tag)) {
-            persistService.removeConfigInfo(dataId, group, tenant, clientIp, null);
+            persistService.removeConfigInfo(dataId, group, tenant, clientIp, srcUser);
         } else {
-            persistService.removeConfigInfoTag(dataId, group, tenant, tag, clientIp, null);
+            persistService.removeConfigInfoTag(dataId, group, tenant, tag, clientIp, srcUser);
         }
         final Timestamp time = TimeUtils.getCurrentTime();
         ConfigTraceService.logPersistenceEvent(dataId, group, tenant, null, time.getTime(), clientIp,
@@ -278,7 +284,7 @@ public class ConfigController {
                                 null, time.getTime(), clientIp, ConfigTraceService.PERSISTENCE_EVENT_REMOVE, null);
             }
         }
-        return ResultBuilder.buildSuccessResult(true);
+        return RestResultUtils.success(true);
     }
     
     @GetMapping("/catalog")
@@ -394,7 +400,7 @@ public class ConfigController {
      * Execute to remove beta operation.
      *
      * @param dataId dataId string value.
-     * @param group group string value.
+     * @param group  group string value.
      * @param tenant tenant string value.
      * @return Execute to operate result.
      */
@@ -425,7 +431,7 @@ public class ConfigController {
      * Execute to query beta operation.
      *
      * @param dataId dataId string value.
-     * @param group group string value.
+     * @param group  group string value.
      * @param tenant tenant string value.
      * @return RestResult for ConfigInfo4Beta.
      */
@@ -452,11 +458,11 @@ public class ConfigController {
     /**
      * Execute export config operation.
      *
-     * @param dataId dataId string value.
-     * @param group group string value.
+     * @param dataId  dataId string value.
+     * @param group   group string value.
      * @param appName appName string value.
-     * @param tenant tenant string value.
-     * @param ids id list value.
+     * @param tenant  tenant string value.
+     * @param ids     id list value.
      * @return ResponseEntity.
      */
     @GetMapping(params = "export=true")
@@ -467,7 +473,7 @@ public class ConfigController {
             @RequestParam(value = "tenant", required = false, defaultValue = StringUtils.EMPTY) String tenant,
             @RequestParam(value = "ids", required = false) List<Long> ids) {
         ids.removeAll(Collections.singleton(null));
-        tenant = processTenant(tenant);
+        tenant = NamespaceUtil.processNamespaceParameter(tenant);
         List<ConfigAllInfo> dataList = persistService.findAllConfigInfo4Export(dataId, group, tenant, appName, ids);
         List<ZipUtils.ZipItem> zipItemList = new ArrayList<>();
         StringBuilder metaData = null;
@@ -486,7 +492,7 @@ public class ConfigController {
                         // Fixed use of "\r\n" here
                         .append(ci.getAppName()).append("\r\n");
             }
-            String itemName = ci.getGroup() + "/" + ci.getDataId();
+            String itemName = ci.getGroup() + Constants.CONFIG_EXPORT_ITEM_FILE_SEPARATOR + ci.getDataId();
             zipItemList.add(new ZipUtils.ZipItem(itemName, ci.getContent()));
         }
         if (metaData != null) {
@@ -504,11 +510,11 @@ public class ConfigController {
     /**
      * Execute import and publish config operation.
      *
-     * @param request http servlet request .
-     * @param srcUser src user string value.
+     * @param request   http servlet request .
+     * @param srcUser   src user string value.
      * @param namespace namespace string value.
-     * @param policy policy model.
-     * @param file MultipartFile.
+     * @param policy    policy model.
+     * @param file      MultipartFile.
      * @return RestResult Map.
      * @throws NacosException NacosException.
      */
@@ -522,28 +528,30 @@ public class ConfigController {
         Map<String, Object> failedData = new HashMap<>(4);
         
         if (Objects.isNull(file)) {
-            return ResultBuilder.buildResult(ResultCodeEnum.DATA_EMPTY, failedData);
+            return RestResultUtils.buildResult(ResultCodeEnum.DATA_EMPTY, failedData);
         }
         
-        if (StringUtils.isNotBlank(namespace)) {
-            if (persistService.tenantInfoCountByTenantId(namespace) <= 0) {
-                failedData.put("succCount", 0);
-                return ResultBuilder.buildResult(ResultCodeEnum.NAMESPACE_NOT_EXIST, failedData);
-            }
+        namespace = NamespaceUtil.processNamespaceParameter(namespace);
+        if (StringUtils.isNotBlank(namespace) && persistService.tenantInfoCountByTenantId(namespace) <= 0) {
+            failedData.put("succCount", 0);
+            return RestResultUtils.buildResult(ResultCodeEnum.NAMESPACE_NOT_EXIST, failedData);
         }
+        
         List<ConfigAllInfo> configInfoList = null;
+        List<Map<String, String>> unrecognizedList = null;
         try {
             ZipUtils.UnZipResult unziped = ZipUtils.unzip(file.getBytes());
             ZipUtils.ZipItem metaDataZipItem = unziped.getMetaDataItem();
             Map<String, String> metaDataMap = new HashMap<>(16);
             if (metaDataZipItem != null) {
-                String metaDataStr = metaDataZipItem.getItemData();
-                String[] metaDataArr = metaDataStr.split("\r\n");
+                // compatible all file separator
+                String metaDataStr = metaDataZipItem.getItemData().replaceAll("[\r\n]+", "|");
+                String[] metaDataArr = metaDataStr.split("\\|");
                 for (String metaDataItem : metaDataArr) {
                     String[] metaDataItemArr = metaDataItem.split("=");
                     if (metaDataItemArr.length != 2) {
                         failedData.put("succCount", 0);
-                        return ResultBuilder.buildResult(ResultCodeEnum.METADATA_ILLEGAL, failedData);
+                        return RestResultUtils.buildResult(ResultCodeEnum.METADATA_ILLEGAL, failedData);
                     }
                     metaDataMap.put(metaDataItemArr[0], metaDataItemArr[1]);
                 }
@@ -551,11 +559,14 @@ public class ConfigController {
             List<ZipUtils.ZipItem> itemList = unziped.getZipItemList();
             if (itemList != null && !itemList.isEmpty()) {
                 configInfoList = new ArrayList<>(itemList.size());
+                unrecognizedList = new ArrayList<>();
                 for (ZipUtils.ZipItem item : itemList) {
-                    String[] groupAdnDataId = item.getItemName().split("/");
-                    if (!item.getItemName().contains("/") || groupAdnDataId.length != 2) {
-                        failedData.put("succCount", 0);
-                        return ResultBuilder.buildResult(ResultCodeEnum.DATA_VALIDATION_FAILED, failedData);
+                    String[] groupAdnDataId = item.getItemName().split(Constants.CONFIG_EXPORT_ITEM_FILE_SEPARATOR);
+                    if (groupAdnDataId.length != 2) {
+                        Map<String, String> unrecognizedItem = new HashMap<>(1);
+                        unrecognizedItem.put("itemName", item.getItemName());
+                        unrecognizedList.add(unrecognizedItem);
+                        continue;
                     }
                     String group = groupAdnDataId[0];
                     String dataId = groupAdnDataId[1];
@@ -579,11 +590,11 @@ public class ConfigController {
         } catch (IOException e) {
             failedData.put("succCount", 0);
             LOGGER.error("parsing data failed", e);
-            return ResultBuilder.buildResult(ResultCodeEnum.PARSING_DATA_FAILED, failedData);
+            return RestResultUtils.buildResult(ResultCodeEnum.PARSING_DATA_FAILED, failedData);
         }
         if (configInfoList == null || configInfoList.isEmpty()) {
             failedData.put("succCount", 0);
-            return ResultBuilder.buildResult(ResultCodeEnum.DATA_EMPTY, failedData);
+            return RestResultUtils.buildResult(ResultCodeEnum.DATA_EMPTY, failedData);
         }
         final String srcIp = RequestUtil.getRemoteIp(request);
         String requestIpApp = RequestUtil.getAppName(request);
@@ -596,20 +607,25 @@ public class ConfigController {
                             configInfo.getTenant(), time.getTime()));
             ConfigTraceService
                     .logPersistenceEvent(configInfo.getDataId(), configInfo.getGroup(), configInfo.getTenant(),
-                            requestIpApp, time.getTime(), InetUtils.getSelfIp(),
+                            requestIpApp, time.getTime(), InetUtils.getSelfIP(),
                             ConfigTraceService.PERSISTENCE_EVENT_PUB, configInfo.getContent());
         }
-        return ResultBuilder.buildSuccessResult("导入成功", saveResult);
+        // unrecognizedCount
+        if (!unrecognizedList.isEmpty()) {
+            saveResult.put("unrecognizedCount", unrecognizedList.size());
+            saveResult.put("unrecognizedData", unrecognizedList);
+        }
+        return RestResultUtils.success("导入成功", saveResult);
     }
     
     /**
      * Execute clone config operation.
      *
-     * @param request http servlet request .
-     * @param srcUser src user string value.
-     * @param namespace namespace string value.
+     * @param request         http servlet request .
+     * @param srcUser         src user string value.
+     * @param namespace       namespace string value.
      * @param configBeansList config beans list.
-     * @param policy config policy model.
+     * @param policy          config policy model.
      * @return RestResult for map.
      * @throws NacosException NacosException.
      */
@@ -623,15 +639,14 @@ public class ConfigController {
         Map<String, Object> failedData = new HashMap<>(4);
         if (CollectionUtils.isEmpty(configBeansList)) {
             failedData.put("succCount", 0);
-            return ResultBuilder.buildResult(ResultCodeEnum.NO_SELECTED_CONFIG, failedData);
+            return RestResultUtils.buildResult(ResultCodeEnum.NO_SELECTED_CONFIG, failedData);
         }
         configBeansList.removeAll(Collections.singleton(null));
         
-        if (NAMESPACE_PUBLIC_KEY.equalsIgnoreCase(namespace)) {
-            namespace = "";
-        } else if (persistService.tenantInfoCountByTenantId(namespace) <= 0) {
+        namespace = NamespaceUtil.processNamespaceParameter(namespace);
+        if (StringUtils.isNotBlank(namespace) && persistService.tenantInfoCountByTenantId(namespace) <= 0) {
             failedData.put("succCount", 0);
-            return ResultBuilder.buildResult(ResultCodeEnum.NAMESPACE_NOT_EXIST, failedData);
+            return RestResultUtils.buildResult(ResultCodeEnum.NAMESPACE_NOT_EXIST, failedData);
         }
         
         List<Long> idList = new ArrayList<>(configBeansList.size());
@@ -645,7 +660,7 @@ public class ConfigController {
         
         if (queryedDataList == null || queryedDataList.isEmpty()) {
             failedData.put("succCount", 0);
-            return ResultBuilder.buildResult(ResultCodeEnum.DATA_EMPTY, failedData);
+            return RestResultUtils.buildResult(ResultCodeEnum.DATA_EMPTY, failedData);
         }
         
         List<ConfigAllInfo> configInfoList4Clone = new ArrayList<>(queryedDataList.size());
@@ -664,12 +679,13 @@ public class ConfigController {
             if (StringUtils.isNotBlank(ci.getAppName())) {
                 ci4save.setAppName(ci.getAppName());
             }
+            ci4save.setDesc(ci.getDesc());
             configInfoList4Clone.add(ci4save);
         }
         
         if (configInfoList4Clone.isEmpty()) {
             failedData.put("succCount", 0);
-            return ResultBuilder.buildResult(ResultCodeEnum.DATA_EMPTY, failedData);
+            return RestResultUtils.buildResult(ResultCodeEnum.DATA_EMPTY, failedData);
         }
         final String srcIp = RequestUtil.getRemoteIp(request);
         String requestIpApp = RequestUtil.getAppName(request);
@@ -682,17 +698,10 @@ public class ConfigController {
                             configInfo.getTenant(), time.getTime()));
             ConfigTraceService
                     .logPersistenceEvent(configInfo.getDataId(), configInfo.getGroup(), configInfo.getTenant(),
-                            requestIpApp, time.getTime(), InetUtils.getSelfIp(),
+                            requestIpApp, time.getTime(), InetUtils.getSelfIP(),
                             ConfigTraceService.PERSISTENCE_EVENT_PUB, configInfo.getContent());
         }
-        return ResultBuilder.buildSuccessResult("Clone Completed Successfully", saveResult);
-    }
-    
-    private String processTenant(String tenant) {
-        if (StringUtils.isEmpty(tenant) || NAMESPACE_PUBLIC_KEY.equalsIgnoreCase(tenant)) {
-            return "";
-        }
-        return tenant;
+        return RestResultUtils.success("Clone Completed Successfully", saveResult);
     }
     
 }
